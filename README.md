@@ -24,8 +24,8 @@ See the dedicated chapter below if you want to build the application from source
 - [X] Rename a Program.
 - [X] Store / undo pending modifications.
 - [X] Turn tuner on / off.
-- [ ] Import a Program bank from a file.
-- [ ] Export a Program bank to a file.
+- [X] Export a Program bank to a file.
+- [X] Import a Program bank from a file and restore it to the device.
 
 ## Troubleshooting
 

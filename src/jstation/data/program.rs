@@ -8,7 +8,7 @@ use crate::jstation::{
 };
 use crate::midi;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Program {
     id: ProgramId,
     data: ProgramData,

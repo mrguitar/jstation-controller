@@ -38,6 +38,9 @@ pub enum Error {
     #[error("Error Parsing MIDI message")]
     Parse,
 
+    #[error("Bank file contains no Program")]
+    EmptyBankFile,
+
     #[error("{}", .0)]
     Midi(#[from] midi::Error),
 

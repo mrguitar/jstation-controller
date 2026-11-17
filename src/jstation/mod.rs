@@ -13,6 +13,8 @@ pub use midi::*;
 pub mod procedure;
 pub use procedure::{Procedure, ProcedureBuilder, ProcedureId};
 
+pub mod bank;
+
 pub mod prelude {
     pub use super::data::{
         BoolParameter, CCParameterSetter, ConstRangeParameter, DiscreteParameter, ParameterSetter,
@@ -21,7 +23,10 @@ pub mod prelude {
     pub use super::JStationImpl;
 }
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 use prelude::*;
 
@@ -32,6 +37,8 @@ pub struct JStation {
     programs: BTreeMap<ProgramId, Program>,
     cur_prog_id: Option<ProgramId>,
     has_changed: bool,
+    restore_queue: VecDeque<Program>,
+    restore_total: usize,
 }
 
 impl JStation {
@@ -43,6 +50,8 @@ impl JStation {
             programs: BTreeMap::new(),
             cur_prog_id: None,
             has_changed: false,
+            restore_queue: VecDeque::new(),
+            restore_total: 0,
         }
     }
 
@@ -65,6 +74,23 @@ impl JStation {
         if let Some(cur_prog) = cur_prog {
             self.has_changed = self.dsp.has_changed(cur_prog.data());
         }
+    }
+
+    /// Sends the next queued restore Program, if any.
+    ///
+    /// Programs are sent one at a time, waiting for the device's ack
+    /// (`ToMessageResp`) before sending the next one, so as to avoid
+    /// overrunning the device's MIDI input buffer.
+    fn send_next_restore(&mut self) -> Result<(), Error> {
+        match self.restore_queue.pop_front() {
+            Some(prog) => {
+                self.iface.store_program(&prog)?;
+                self.programs.insert(prog.id(), prog);
+            }
+            None => self.restore_total = 0,
+        }
+
+        Ok(())
     }
 }
 
@@ -103,6 +129,10 @@ impl JStationImpl for JStation {
         self.programs.get(&prog_id)
     }
 
+    fn programs(&self) -> &BTreeMap<ProgramId, Program> {
+        &self.programs
+    }
+
     fn has_changed(&self) -> bool {
         self.has_changed
     }
@@ -113,6 +143,8 @@ impl JStationImpl for JStation {
         self.programs.clear();
         self.cur_prog_id = None;
         self.has_changed = false;
+        self.restore_queue.clear();
+        self.restore_total = 0;
     }
 
     fn handle_device(&mut self, msg: Message) -> Result<(), Error> {
@@ -184,8 +216,21 @@ impl JStationImpl for JStation {
                         self.iface.program_update_req()?;
                     }
                     ToMessageResp(resp) => match resp.res {
-                        Ok(req_proc) => log::debug!("Proc. x{req_proc:02x}: Ok"),
-                        Err(err) => panic!("{err}"),
+                        Ok(req_proc) => {
+                            log::debug!("Proc. x{req_proc:02x}: Ok");
+
+                            if self.restore_total > 0 && req_proc == procedure::OneProgramResp::ID {
+                                self.send_next_restore()?;
+                            }
+                        }
+                        Err(err) => {
+                            if self.restore_total > 0 {
+                                self.restore_queue.clear();
+                                self.restore_total = 0;
+                            }
+
+                            return Err(Error::with_context("Device rejected message", err));
+                        }
                     },
                     other => {
                         log::debug!("Unhandled {other:?}");
@@ -267,6 +312,24 @@ impl JStationImpl for JStation {
         Ok(())
     }
 
+    fn restore_programs(&mut self, programs: Vec<Program>) -> Result<(), Error> {
+        self.restore_total = programs.len();
+        self.restore_queue = programs.into();
+
+        self.send_next_restore()
+    }
+
+    fn restore_progress(&self) -> Option<(usize, usize)> {
+        if self.restore_total == 0 {
+            return None;
+        }
+
+        Some((
+            self.restore_total - self.restore_queue.len(),
+            self.restore_total,
+        ))
+    }
+
     fn rename(&mut self, name: impl ToString) {
         self.dsp.name = ProgramData::format_name(name.to_string());
         self.update_has_changed();
@@ -338,6 +401,10 @@ pub trait JStationImpl {
         self.inner().get_program(prog_id)
     }
 
+    fn programs(&self) -> &BTreeMap<ProgramId, Program> {
+        self.inner().programs()
+    }
+
     fn has_changed(&self) -> bool {
         self.inner().has_changed()
     }
@@ -372,6 +439,14 @@ pub trait JStationImpl {
 
     fn undo(&mut self) -> Result<(), Error> {
         self.inner_mut().undo()
+    }
+
+    fn restore_programs(&mut self, programs: Vec<Program>) -> Result<(), Error> {
+        self.inner_mut().restore_programs(programs)
+    }
+
+    fn restore_progress(&self) -> Option<(usize, usize)> {
+        self.inner().restore_progress()
     }
 
     fn rename(&mut self, name: impl ToString) {

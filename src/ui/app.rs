@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cell::RefCell, future, rc::Rc, sync::Arc};
+use std::{borrow::Cow, cell::RefCell, future, path::PathBuf, rc::Rc, sync::Arc};
 
 use iced::{
     widget::{column, container, horizontal_space, row, scrollable, vertical_space, Column, Text},
@@ -62,7 +62,13 @@ impl App {
                             future::ready(Message::HideModal).boxed(),
                         )));
                     }
-                    _ => self.jstation.handle_device(SysEx(sysex))?,
+                    _ => self.jstation.handle_device(SysEx(sysex)).map_err(|err| {
+                        if self.panel.is_restoring() {
+                            self.panel = Panel::Main;
+                        }
+
+                        err
+                    })?,
                 }
             }
             Ok(ChannelVoice(cv)) => self.jstation.handle_device(ChannelVoice(cv))?,
@@ -87,6 +93,11 @@ impl App {
                     Err(err)?;
                 }
             }
+        }
+
+        if self.panel.is_restoring() && self.jstation.restore_progress().is_none() {
+            self.panel = Panel::Main;
+            self.set_status("Program bank restored");
         }
 
         Ok(Command::none())
@@ -238,6 +249,52 @@ impl Application for App {
                 self.panel = Panel::UtilitySettings;
                 Ok(())
             }
+            ExportBank => {
+                return Command::perform(pick_bank_save_path(), Message::ExportPathPicked)
+            }
+            ExportPathPicked(path) => match path {
+                Some(path) => {
+                    let buf = jstation::bank::serialize(self.jstation.programs().values());
+
+                    std::fs::write(&path, buf)
+                        .map_err(|err| Error::Io(err.to_string()))
+                        .map(|()| self.set_status(format!("Exported bank to {}", path.display())))
+                }
+                None => Ok(()),
+            },
+            ImportBank => {
+                return Command::perform(pick_bank_open_path(), Message::ImportPathPicked)
+            }
+            ImportPathPicked(path) => match path {
+                Some(path) => std::fs::read(&path)
+                    .map_err(|err| Error::Io(err.to_string()))
+                    .and_then(|bytes| jstation::bank::parse(&bytes).map_err(Error::from))
+                    .map(|programs| {
+                        let skipped_factory = programs
+                            .iter()
+                            .filter(|prog| prog.id().bank().is_factory())
+                            .count();
+                        let programs = programs
+                            .into_iter()
+                            .filter(|prog| prog.id().bank().is_user())
+                            .collect();
+
+                        self.panel = Panel::RestoreConfirm {
+                            programs,
+                            skipped_factory,
+                        };
+                    }),
+                None => Ok(()),
+            },
+            ConfirmRestore => match std::mem::replace(&mut self.panel, Panel::Restoring) {
+                Panel::RestoreConfirm { programs, .. } => {
+                    self.jstation.restore_programs(programs).map_err(Into::into)
+                }
+                other => {
+                    self.panel = other;
+                    Ok(())
+                }
+            },
         };
 
         match res {
@@ -255,7 +312,7 @@ impl Application for App {
     fn view(&self) -> Element<Message> {
         use Message::*;
 
-        let content: Element<_> = match self.panel {
+        let content: Element<_> = match &self.panel {
             Panel::Main => {
                 let mut dsp = column![
                     ui::compressor::Panel::new(self.jstation.dsp().compressor),
@@ -352,6 +409,19 @@ impl Application for App {
                     }
 
                     left_header = left_header.push(
+                        ui::button("Export Bank...")
+                            .on_press(ExportBank)
+                            .style(style::Button::Default.into()),
+                    );
+                    left_header = left_header.push(horizontal_space(Length::Fixed(10f32)));
+                    left_header = left_header.push(
+                        ui::button("Import Bank...")
+                            .on_press(ImportBank)
+                            .style(style::Button::Default.into()),
+                    );
+                    left_header = left_header.push(horizontal_space(Length::Fixed(10f32)));
+
+                    left_header = left_header.push(
                         ui::button("Store...")
                             .on_press(ShowStoreTo)
                             .style(style::Button::Active.into()),
@@ -446,6 +516,69 @@ impl Application for App {
                 HideModal,
             )
             .into(),
+            Panel::RestoreConfirm {
+                programs,
+                skipped_factory,
+            } => {
+                let mut body = column![ui::label(format!(
+                    "Found {} User Program(s) to restore.",
+                    programs.len(),
+                ))];
+
+                if *skipped_factory > 0 {
+                    body = body.push(ui::label(format!(
+                        "{skipped_factory} Factory Program(s) in the file will be skipped.",
+                    )));
+                }
+
+                body = body.push(vertical_space(Length::Fixed(15f32)));
+
+                body = body.push(
+                    scrollable(Column::with_children(
+                        programs
+                            .iter()
+                            .map(|prog| {
+                                row![
+                                    ui::value_label(prog.id().nb().to_string()),
+                                    horizontal_space(Length::Fixed(5f32)),
+                                    ui::value_label(prog.name().to_string()),
+                                ]
+                                .into()
+                            })
+                            .collect(),
+                    ))
+                    .height(Length::Fixed(200f32)),
+                );
+
+                body = body.push(vertical_space(Length::Fixed(20f32)));
+
+                body = body.push(
+                    row![
+                        ui::button("Cancel")
+                            .on_press(HideModal)
+                            .style(style::Button::Default.into()),
+                        horizontal_space(Length::Fixed(10f32)),
+                        ui::button("Restore to Device")
+                            .on_press(ConfirmRestore)
+                            .style(style::Button::Active.into()),
+                    ]
+                    .align_items(Alignment::Center),
+                );
+
+                ui::modal("Restore Program Bank", body, HideModal).into()
+            }
+            Panel::Restoring => {
+                let (done, total) = self.jstation.restore_progress().unwrap_or((0, 0));
+
+                ui::modal(
+                    "Restoring...",
+                    ui::label(format!(
+                        "Writing Program {done} of {total} to the device..."
+                    )),
+                    HideModal,
+                )
+                .into()
+            }
         };
 
         let content: Element<_> = container(column![
@@ -491,6 +624,11 @@ pub enum Message {
     HideModal,
     UseDarkTheme(bool),
     UtilitySettings(dsp::UtilitySettings),
+    ExportBank,
+    ExportPathPicked(Option<PathBuf>),
+    ImportBank,
+    ImportPathPicked(Option<PathBuf>),
+    ConfirmRestore,
 }
 
 impl From<dsp::amp::Parameter> for Message {
@@ -551,7 +689,7 @@ impl From<dsp::Parameter> for Message {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 enum Panel {
     #[default]
     Main,
@@ -559,11 +697,20 @@ enum Panel {
     MidiConnection,
     Tuner,
     UtilitySettings,
+    RestoreConfirm {
+        programs: Vec<Program>,
+        skipped_factory: usize,
+    },
+    Restoring,
 }
 
 impl Panel {
-    fn is_tuner(self) -> bool {
+    fn is_tuner(&self) -> bool {
         matches!(self, Panel::Tuner)
+    }
+
+    fn is_restoring(&self) -> bool {
+        matches!(self, Panel::Restoring)
     }
 }
 
@@ -580,9 +727,30 @@ pub enum Error {
     },
     #[error("Unexpected program received {}", .0)]
     UnexpectedProgram(ProgramId),
+    #[error("File error: {}", .0)]
+    Io(String),
 }
 
 #[derive(Debug, Copy, Clone, Hash)]
 pub enum Subscription {
     JStation,
+}
+
+async fn pick_bank_save_path() -> Option<PathBuf> {
+    rfd::AsyncFileDialog::new()
+        .set_title("Export Program Bank")
+        .set_file_name("bank.syx")
+        .add_filter("J-Station Bank", &["syx"])
+        .save_file()
+        .await
+        .map(|handle| handle.path().to_path_buf())
+}
+
+async fn pick_bank_open_path() -> Option<PathBuf> {
+    rfd::AsyncFileDialog::new()
+        .set_title("Import Program Bank")
+        .add_filter("J-Station Bank", &["syx"])
+        .pick_file()
+        .await
+        .map(|handle| handle.path().to_path_buf())
 }

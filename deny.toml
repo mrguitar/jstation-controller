@@ -39,6 +39,8 @@ skip = [
     { name = "indexmap", version = "1.9"},
     { name = "libloading", version = "0.7"},
     { name = "linux-raw-sys", version = "0.3"},
+    # Brought in by `rfd` (native file dialogs, used for Program bank import/export)
+    { name = "linux-raw-sys", version = "0.12.1"},
     { name = "memmap2", version = "0.5"},
     { name = "memoffset", version = "0.6"},
     { name = "nix", version = "0.24"},
@@ -49,19 +51,30 @@ skip = [
     { name = "redox_syscall", version = "0.2"},
     { name = "raw-window-handle", version = "0.3.4"},
     { name = "raw-window-handle", version = "0.4.3"},
+    # Brought in by `rfd` (native file dialogs, used for Program bank import/export)
+    { name = "raw-window-handle", version = "0.6.2"},
     { name = "rustix", version = "0.37"},
+    # Brought in by `rfd`
+    { name = "rustix", version = "1.1.6"},
     { name = "smithay-client-toolkit", version = "0.16"},
     { name = "smithay-client-toolkit", version = "0.18"},
     { name = "syn", version = "1"},
     { name = "wayland-client", version = "0.29"},
     { name = "wayland-cursor", version = "0.29"},
     { name = "wayland-protocols", version = "0.29"},
+    # Brought in by `rfd`
+    { name = "wayland-protocols", version = "0.32.10"},
     { name = "wayland-scanner", version = "0.29"},
     { name = "wayland-sys", version = "0.29"},
     { name = "wayland-sys", version = "0.31"},
+    # Brought in by `rfd`'s Windows backend (unused on this platform, but still
+    # part of the resolved dependency graph)
+    { name = "windows", version = "0.44.0"},
     { name = "windows-sys", version = "0.36"},
     { name = "windows-sys", version = "0.48"},
+    { name = "windows-sys", version = "0.61.2"},
     { name = "windows-targets", version = "0.48"},
+    { name = "windows-targets", version = "0.52.0"},
     { name = "windows_aarch64_msvc", version = "0.36"},
     { name = "windows_aarch64_msvc", version = "0.42"},
     { name = "windows_aarch64_msvc", version = "0.48"},
