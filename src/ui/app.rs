@@ -274,14 +274,18 @@ impl Application for App {
                             .iter()
                             .filter(|prog| prog.id().bank().is_factory())
                             .count();
-                        let programs = programs
+                        let mut programs: Vec<_> = programs
                             .into_iter()
                             .filter(|prog| prog.id().bank().is_user())
                             .collect();
 
-                        self.panel = Panel::RestoreConfirm {
-                            programs,
-                            skipped_factory,
+                        self.panel = if programs.len() == 1 {
+                            Panel::ImportSingleProgram(programs.pop().expect("checked len() == 1"))
+                        } else {
+                            Panel::RestoreConfirm {
+                                programs,
+                                skipped_factory,
+                            }
                         };
                     }),
                 None => Ok(()),
@@ -289,6 +293,19 @@ impl Application for App {
             ConfirmRestore => match std::mem::replace(&mut self.panel, Panel::Restoring) {
                 Panel::RestoreConfirm { programs, .. } => {
                     self.jstation.restore_programs(programs).map_err(Into::into)
+                }
+                other => {
+                    self.panel = other;
+                    Ok(())
+                }
+            },
+            ReloadBank => self.jstation.reload_bank().map_err(Into::into),
+            PickImportSlot(nb) => match std::mem::replace(&mut self.panel, Panel::Restoring) {
+                Panel::ImportSingleProgram(mut program) => {
+                    program.set_id(ProgramId::new_user(nb));
+                    self.jstation
+                        .restore_programs(vec![program])
+                        .map_err(Into::into)
                 }
                 other => {
                     self.panel = other;
@@ -409,19 +426,6 @@ impl Application for App {
                     }
 
                     left_header = left_header.push(
-                        ui::button("Export Bank...")
-                            .on_press(ExportBank)
-                            .style(style::Button::Default.into()),
-                    );
-                    left_header = left_header.push(horizontal_space(Length::Fixed(10f32)));
-                    left_header = left_header.push(
-                        ui::button("Import Bank...")
-                            .on_press(ImportBank)
-                            .style(style::Button::Default.into()),
-                    );
-                    left_header = left_header.push(horizontal_space(Length::Fixed(10f32)));
-
-                    left_header = left_header.push(
                         ui::button("Store...")
                             .on_press(ShowStoreTo)
                             .style(style::Button::Active.into()),
@@ -435,12 +439,35 @@ impl Application for App {
                 )
                 .width(Length::Fill),];
 
+                let mut bank_header = row![];
+                if self.jstation.iface().is_connected() {
+                    bank_header = bank_header.push(
+                        ui::button("Export Bank...")
+                            .on_press(ExportBank)
+                            .style(style::Button::Default.into()),
+                    );
+                    bank_header = bank_header.push(horizontal_space(Length::Fixed(10f32)));
+                    bank_header = bank_header.push(
+                        ui::button("Import Bank...")
+                            .on_press(ImportBank)
+                            .style(style::Button::Default.into()),
+                    );
+                    bank_header = bank_header.push(horizontal_space(Length::Fixed(10f32)));
+                    bank_header = bank_header.push(
+                        ui::button("Reload Bank")
+                            .on_press(ReloadBank)
+                            .style(style::Button::Default.into()),
+                    );
+                }
+
                 column![
                     row![
                         left_header,
                         horizontal_space(widget::DSP_PROGRAM_SPACING),
                         right_header
                     ],
+                    vertical_space(Length::Fixed(10f32)),
+                    bank_header,
                     vertical_space(Length::Fixed(10f32)),
                     row![
                         scrollable(dsp),
@@ -567,6 +594,37 @@ impl Application for App {
 
                 ui::modal("Restore Program Bank", body, HideModal).into()
             }
+            Panel::ImportSingleProgram(program) => {
+                let slots = scrollable(Column::with_children(
+                    ProgramNb::enumerate()
+                        .map(|prog_nb| {
+                            let prog_id = ProgramId::new_user(prog_nb);
+
+                            iced::widget::Button::new(row![
+                                ui::value_label(prog_id.nb().to_string()),
+                                horizontal_space(Length::Fixed(5f32)),
+                                ui::value_label(
+                                    self.jstation
+                                        .get_program(prog_id)
+                                        .map_or("", Program::name)
+                                        .to_string()
+                                )
+                                .width(Length::Fill),
+                            ])
+                            .on_press(PickImportSlot(prog_nb))
+                            .style(ui::style::Button::ListItem.into())
+                            .into()
+                        })
+                        .collect(),
+                ));
+
+                ui::modal(
+                    &format!("Import \"{}\" to slot...", program.name()),
+                    slots,
+                    HideModal,
+                )
+                .into()
+            }
             Panel::Restoring => {
                 let (done, total) = self.jstation.restore_progress().unwrap_or((0, 0));
 
@@ -629,6 +687,8 @@ pub enum Message {
     ImportBank,
     ImportPathPicked(Option<PathBuf>),
     ConfirmRestore,
+    ReloadBank,
+    PickImportSlot(ProgramNb),
 }
 
 impl From<dsp::amp::Parameter> for Message {
@@ -701,6 +761,7 @@ enum Panel {
         programs: Vec<Program>,
         skipped_factory: usize,
     },
+    ImportSingleProgram(Program),
     Restoring,
 }
 

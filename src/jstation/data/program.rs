@@ -23,6 +23,10 @@ impl Program {
         self.id
     }
 
+    pub fn set_id(&mut self, id: ProgramId) {
+        self.id = id;
+    }
+
     pub fn data(&self) -> &ProgramData {
         &self.data
     }

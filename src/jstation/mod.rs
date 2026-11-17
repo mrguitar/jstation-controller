@@ -330,6 +330,13 @@ impl JStationImpl for JStation {
         ))
     }
 
+    fn reload_bank(&mut self) -> Result<(), Error> {
+        self.programs.clear();
+        self.cur_prog_id = None;
+
+        self.iface.bank_dump()
+    }
+
     fn rename(&mut self, name: impl ToString) {
         self.dsp.name = ProgramData::format_name(name.to_string());
         self.update_has_changed();
@@ -447,6 +454,10 @@ pub trait JStationImpl {
 
     fn restore_progress(&self) -> Option<(usize, usize)> {
         self.inner().restore_progress()
+    }
+
+    fn reload_bank(&mut self) -> Result<(), Error> {
+        self.inner_mut().reload_bank()
     }
 
     fn rename(&mut self, name: impl ToString) {
