@@ -32,23 +32,36 @@ pub fn serialize<'a>(programs: impl Iterator<Item = &'a Program>) -> Vec<u8> {
 
 /// Parses the `Program`s found in a J-Station bank file buffer.
 ///
-/// Only `OneProgramResp` procedures are collected: the Start / End Bank Dump
-/// markers, if present, are ignored. This also allows parsing a file
-/// produced by an actual live Bank Dump capture, markers included.
+/// Only `OneProgramResp` procedures are collected. Real `.syx` bank/patch
+/// backups produced by the original J-Edit application (verified against
+/// several real-world sample files) were found to lead with one extra SysEx
+/// message using an undocumented procedure id (`0x70`) that this crate has
+/// no definition for. So, rather than relying on the strict, single-pass
+/// `sysex::parse` (which aborts the whole buffer on the first procedure it
+/// doesn't recognize), each complete `F0`..`F7` message is located and
+/// parsed independently, and silently skipped if it isn't a `OneProgramResp`
+/// we can decode.
 pub fn parse(mut input: &[u8]) -> Result<Vec<Program>, Error> {
     let mut programs = Vec::new();
 
-    while !input.is_empty() {
-        let (rest, msg) = sysex::parse(input).map_err(|err| {
-            log::error!("Bank file: {err}");
+    while let Some(start) = input.iter().position(|&byte| byte == midi::sysex::TAG) {
+        input = &input[start..];
 
-            Error::Parse
-        })?;
+        let Some(end) = input.iter().position(|&byte| byte == midi::sysex::END_TAG) else {
+            // Truncated trailing message: nothing more we can parse.
+            break;
+        };
 
+        let (msg, rest) = input.split_at(end + 1);
         input = rest;
 
-        if let Procedure::OneProgramResp(resp) = msg.proc {
-            programs.push(resp.prog);
+        match sysex::parse(msg) {
+            Ok((_, msg)) => {
+                if let Procedure::OneProgramResp(resp) = msg.proc {
+                    programs.push(resp.prog);
+                }
+            }
+            Err(err) => log::debug!("Bank file: skipping unrecognized message: {err:?}"),
         }
     }
 
